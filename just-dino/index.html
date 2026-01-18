@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Running T-Rex</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: monospace; }
+        canvas { display: block; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.85);
+            padding: 15px;
+            border-radius: 8px;
+            color: white;
+            max-width: 300px;
+        }
+        #controls h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+        }
+        .upload-section {
+            margin-bottom: 12px;
+            padding: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+        }
+        .upload-section label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        input[type="file"] {
+            font-size: 11px;
+            color: white;
+            width: 100%;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 12px;
+            width: 100%;
+            margin-top: 8px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .status {
+            font-size: 11px;
+            color: #4CAF50;
+            margin-top: 8px;
+        }
+        .error {
+            color: #ff6b6b;
+        }
+        .controls-row {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255,255,255,0.2);
+        }
+        .controls-row label {
+            display: block;
+            font-size: 11px;
+            margin-bottom: 4px;
+        }
+        input[type="range"] {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h3>🎵 Audio Mixer</h3>
+        
+        <div class="upload-section">
+            <label>Track 1 (MP3):</label>
+            <input type="file" id="audio1" accept="audio/mp3,audio/mpeg">
+        </div>
+        
+        <div class="upload-section">
+            <label>Track 2 (MP3):</label>
+            <input type="file" id="audio2" accept="audio/mp3,audio/mpeg">
+        </div>
+        
+        <button id="playBtn" disabled>Play Mixed Audio</button>
+        <button id="stopBtn" disabled>Stop</button>
+        
+        <div class="controls-row">
+            <label>Track 1 Volume: <span id="vol1-value">100%</span></label>
+            <input type="range" id="vol1" min="0" max="100" value="100">
+            
+            <label>Track 2 Volume: <span id="vol2-value">100%</span></label>
+            <input type="range" id="vol2" min="0" max="100" value="100">
+        </div>
+        
+        <div id="status" class="status"></div>
+    </div>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // Audio context and variables
+        let audioContext;
+        let audioBuffer1, audioBuffer2;
+        let source1, source2;
+        let gainNode1, gainNode2;
+        let isPlaying = false;
+
+        const audio1Input = document.getElementById('audio1');
+        const audio2Input = document.getElementById('audio2');
+        const playBtn = document.getElementById('playBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const vol1Slider = document.getElementById('vol1');
+        const vol2Slider = document.getElementById('vol2');
+        const vol1Value = document.getElementById('vol1-value');
+        const vol2Value = document.getElementById('vol2-value');
+        const statusDiv = document.getElementById('status');
+
+        // Initialize audio context on first user interaction
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        // Load audio file
+        async function loadAudioFile(file) {
+            initAudio();
+            const arrayBuffer = await file.arrayBuffer();
+            return await audioContext.decodeAudioData(arrayBuffer);
+        }
+
+        // Handle file uploads
+        audio1Input.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                try {
+                    statusDiv.textContent = 'Loading Track 1...';
+                    statusDiv.className = 'status';
+                    audioBuffer1 = await loadAudioFile(file);
+                    statusDiv.textContent = 'Track 1 loaded!';
+                    checkReadyToPlay();
+                } catch (error) {
+                    statusDiv.textContent = 'Error loading Track 1';
+                    statusDiv.className = 'status error';
+                }
+            }
+        });
+
+        audio2Input.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                try {
+                    statusDiv.textContent = 'Loading Track 2...';
+                    statusDiv.className = 'status';
+                    audioBuffer2 = await loadAudioFile(file);
+                    statusDiv.textContent = 'Track 2 loaded!';
+                    checkReadyToPlay();
+                } catch (error) {
+                    statusDiv.textContent = 'Error loading Track 2';
+                    statusDiv.className = 'status error';
+                }
+            }
+        });
+
+        function checkReadyToPlay() {
+            if (audioBuffer1 && audioBuffer2) {
+                playBtn.disabled = false;
+                statusDiv.textContent = 'Both tracks ready!';
+                statusDiv.className = 'status';
+            }
+        }
+
+        // Play mixed audio
+        playBtn.addEventListener('click', () => {
+            if (isPlaying) return;
+            
+            initAudio();
+            
+            // Create analyser for tempo detection
+            const analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+            
+            // Create gain nodes for volume control
+            gainNode1 = audioContext.createGain();
+            gainNode2 = audioContext.createGain();
+            
+            gainNode1.gain.value = vol1Slider.value / 100;
+            gainNode2.gain.value = vol2Slider.value / 100;
+            
+            // Create sources
+            source1 = audioContext.createBufferSource();
+            source1.buffer = audioBuffer1;
+            source1.connect(gainNode1);
+            gainNode1.connect(analyser);
+            analyser.connect(audioContext.destination);
+            
+            source2 = audioContext.createBufferSource();
+            source2.buffer = audioBuffer2;
+            source2.connect(gainNode2);
+            gainNode2.connect(audioContext.destination);
+            
+            // Start both tracks simultaneously
+            source1.start(0);
+            source2.start(0);
+            
+            isPlaying = true;
+            isMusicPlaying = true;
+            playBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusDiv.textContent = '▶ Playing mixed audio...';
+            statusDiv.className = 'status';
+            
+            // Analyze audio for tempo
+            analyzeAudioTempo(analyser);
+            
+            // Handle when tracks end
+            source1.onended = () => {
+                if (isPlaying) {
+                    stopAudio();
+                }
+            };
+        });
+
+        // Stop audio
+        stopBtn.addEventListener('click', stopAudio);
+
+        function stopAudio() {
+            if (source1) source1.stop();
+            if (source2) source2.stop();
+            isPlaying = false;
+            isMusicPlaying = false;
+            playBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusDiv.textContent = '⏸ Stopped';
+        }
+        
+        // Analyze audio tempo and adjust animation speed
+        let audioSpeed = 0.15; // default speed
+        let isMusicPlaying = false;
+        
+        function analyzeAudioTempo(analyser) {
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            function detectBeat() {
+                if (!isMusicPlaying) return;
+                
+                analyser.getByteFrequencyData(dataArray);
+                
+                // Calculate average energy in low frequencies (bass/kick drum)
+                let sum = 0;
+                const lowFreqEnd = Math.floor(dataArray.length * 0.1);
+                for (let i = 0; i < lowFreqEnd; i++) {
+                    sum += dataArray[i];
+                }
+                const avgEnergy = sum / lowFreqEnd;
+                
+                // Map energy to animation speed (normalized)
+                audioSpeed = 0.08 + (avgEnergy / 255) * 0.15;
+                
+                requestAnimationFrame(detectBeat);
+            }
+            
+            detectBeat();
+        }
+
+        // Volume controls
+        vol1Slider.addEventListener('input', (e) => {
+            const value = e.target.value;
+            vol1Value.textContent = value + '%';
+            if (gainNode1) gainNode1.gain.value = value / 100;
+        });
+
+        vol2Slider.addEventListener('input', (e) => {
+            const value = e.target.value;
+            vol2Value.textContent = value + '%';
+            if (gainNode2) gainNode2.gain.value = value / 100;
+        });
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+        scene.fog = new THREE.Fog(0x87ceeb, 50, 200);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(6, 4, 10);
+        camera.lookAt(0, 2, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(10, 15, 5);
+        dirLight.castShadow = true;
+        dirLight.shadow.camera.left = -15;
+        dirLight.shadow.camera.right = 15;
+        dirLight.shadow.camera.top = 15;
+        dirLight.shadow.camera.bottom = -15;
+        scene.add(dirLight);
+
+        // Ground
+        const groundGeometry = new THREE.PlaneGeometry(100, 100);
+        const groundMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x3a7d44,
+            roughness: 0.8
+        });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // Grid
+        const gridHelper = new THREE.GridHelper(100, 50, 0x000000, 0x000000);
+        gridHelper.material.opacity = 0.2;
+        gridHelper.material.transparent = true;
+        scene.add(gridHelper);
+
+        // T-Rex Group
+        const trex = new THREE.Group();
+        
+        const greenDark = 0x2d5016;
+        const greenMain = 0x4a7c2d;
+        const greenLight = 0x6b9447;
+        
+        // Body (tilted forward)
+        const bodyGeo = new THREE.BoxGeometry(2.5, 1.8, 1.3);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: greenMain });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.set(0, 2.5, 0);
+        body.rotation.z = 0.2;
+        body.castShadow = true;
+        trex.add(body);
+
+        // Neck
+        const neckGeo = new THREE.CylinderGeometry(0.5, 0.6, 1, 8);
+        const neck = new THREE.Mesh(neckGeo, bodyMat);
+        neck.position.set(1.3, 3.2, 0);
+        neck.rotation.z = -0.3;
+        neck.castShadow = true;
+        trex.add(neck);
+
+        // Head (positioned higher)
+        const headGeo = new THREE.BoxGeometry(1.4, 1.2, 1.1);
+        const head = new THREE.Mesh(headGeo, bodyMat);
+        head.position.set(2, 4.2, 0);
+        head.castShadow = true;
+        trex.add(head);
+
+        // Snout
+        const snoutGeo = new THREE.BoxGeometry(1, 0.6, 0.9);
+        const snout = new THREE.Mesh(snoutGeo, new THREE.MeshStandardMaterial({ color: greenLight }));
+        snout.position.set(2.6, 4, 0);
+        snout.castShadow = true;
+        trex.add(snout);
+
+        // Lower jaw
+        const jawGeo = new THREE.BoxGeometry(0.9, 0.5, 0.85);
+        const jaw = new THREE.Mesh(jawGeo, new THREE.MeshStandardMaterial({ color: greenLight }));
+        jaw.position.set(2.5, 3.5, 0);
+        jaw.castShadow = true;
+        trex.add(jaw);
+
+        // Tail
+        const tailGeo = new THREE.ConeGeometry(0.5, 3, 8);
+        const tail = new THREE.Mesh(tailGeo, bodyMat);
+        tail.position.set(-2, 2.2, 0);
+        tail.rotation.z = Math.PI / 2 + 0.15;
+        tail.castShadow = true;
+        trex.add(tail);
+
+        // Tiny arms
+        const armGeo = new THREE.CylinderGeometry(0.12, 0.1, 0.6, 8);
+        const armMat = new THREE.MeshStandardMaterial({ color: greenDark });
+        
+        const armLeft = new THREE.Mesh(armGeo, armMat);
+        armLeft.position.set(1, 2.8, 0.6);
+        armLeft.rotation.z = 0.6;
+        armLeft.castShadow = true;
+        trex.add(armLeft);
+        
+        const armRight = new THREE.Mesh(armGeo, armMat);
+        armRight.position.set(1, 2.8, -0.6);
+        armRight.rotation.z = 0.6;
+        armRight.castShadow = true;
+        trex.add(armRight);
+
+        // Powerful back legs
+        const legGeo = new THREE.CylinderGeometry(0.25, 0.22, 2, 8);
+        const legMat = new THREE.MeshStandardMaterial({ color: greenDark });
+        
+        const legLeft = new THREE.Mesh(legGeo, legMat);
+        legLeft.position.set(-0.5, 1, 0.6);
+        legLeft.castShadow = true;
+        trex.add(legLeft);
+        
+        const legRight = new THREE.Mesh(legGeo, legMat);
+        legRight.position.set(-0.5, 1, -0.6);
+        legRight.castShadow = true;
+        trex.add(legRight);
+
+        // Feet
+        const footGeo = new THREE.BoxGeometry(0.6, 0.2, 0.4);
+        
+        const footLeft = new THREE.Mesh(footGeo, legMat);
+        footLeft.position.set(-0.2, 0.1, 0.6);
+        footLeft.castShadow = true;
+        trex.add(footLeft);
+        
+        const footRight = new THREE.Mesh(footGeo, legMat);
+        footRight.position.set(-0.2, 0.1, -0.6);
+        footRight.castShadow = true;
+        trex.add(footRight);
+
+        scene.add(trex);
+
+        // Mouse control
+        let mouseX = 0;
+        let targetRotation = 0;
+        
+        document.addEventListener('mousemove', (event) => {
+            mouseX = (event.clientX / window.innerWidth) * 2 - 1;
+            targetRotation = mouseX * Math.PI;
+        });
+
+        // Animation
+        let time = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Use audio-driven speed when music is playing, otherwise use default
+            const speed = isMusicPlaying ? audioSpeed : 0.15;
+            time += speed;
+            
+            const animSpeed = speed * 20; // Scale for smoother motion
+            
+            // Leg running motion - synced to audio tempo
+            const legSwing = Math.sin(time * animSpeed) * 0.4;
+            legLeft.position.x = -0.5 + legSwing;
+            legRight.position.x = -0.5 - legSwing;
+            
+            footLeft.position.x = -0.2 + legSwing;
+            footRight.position.x = -0.2 - legSwing;
+            
+            // Body bobbing - synced to audio
+            const bob = Math.abs(Math.sin(time * animSpeed)) * 0.15;
+            body.position.y = 2.5 + bob;
+            neck.position.y = 3.2 + bob;
+            head.position.y = 4.2 + bob;
+            snout.position.y = 4 + bob;
+            jaw.position.y = 3.5 + bob;
+            
+            // Tail sway - synced to audio
+            tail.position.z = Math.sin(time * animSpeed * 0.83) * 0.4;
+            tail.rotation.y = Math.sin(time * animSpeed * 0.83) * 0.25;
+            
+            // Slight head bob - synced to audio
+            head.rotation.x = Math.sin(time * animSpeed) * 0.06;
+            
+            // Camera rotation
+            camera.position.x += (Math.sin(targetRotation) * 10 - camera.position.x) * 0.05;
+            camera.position.z += (Math.cos(targetRotation) * 10 - camera.position.z) * 0.05;
+            camera.lookAt(0, 2, 0);
+            
+            renderer.render(scene, camera);
+        }
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
